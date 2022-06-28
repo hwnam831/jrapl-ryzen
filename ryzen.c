@@ -22,36 +22,15 @@
  */
 
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <errno.h>
-#include <inttypes.h>
-#include <unistd.h>
-#include <math.h>
-#include <string.h>
+#include "ryzen.h"
 
-#include <sys/syscall.h>
-#include <linux/perf_event.h>
 
-#define AMD_MSR_PWR_UNIT 0xC0010299
-#define AMD_MSR_CORE_ENERGY 0xC001029A
-#define AMD_MSR_PACKAGE_ENERGY 0xC001029B
-
-#define AMD_TIME_UNIT_MASK 0xF0000
-#define AMD_ENERGY_UNIT_MASK 0x1F00
-#define AMD_POWER_UNIT_MASK 0xF
-#define STRING_BUFFER 1024
-
-#define MAX_CPUS	1024
-#define MAX_PACKAGES	16
-
-static int total_cores=0,total_packages=0;
 static int package_map[MAX_PACKAGES];
+static int *msr_fd; //msr fds for "physical" cores. Assumes SMT enabled
+static double energy_unit_d;
 
-static int detect_packages(void) {
+
+int detect_packages(void) {
 
 	char filename[BUFSIZ];
 	FILE *fff;
@@ -87,7 +66,7 @@ static int detect_packages(void) {
 	return 0;
 }
 
-static int open_msr(int core) {
+int open_msr(int core) {
 
 	char msr_filename[BUFSIZ];
 	int fd;
@@ -112,7 +91,7 @@ static int open_msr(int core) {
 	return fd;
 }
 
-static long long read_msr(int fd, unsigned int which) {
+long long read_msr(int fd, unsigned int which) {
 
 	uint64_t data;
 
@@ -122,6 +101,39 @@ static long long read_msr(int fd, unsigned int which) {
 	}
 
 	return (long long)data;
+}
+
+void init_rapl(){
+	detect_packages();
+	int i;
+	msr_fd = (int*)malloc(sizeof(int)*total_cores/2);
+	for (i = 0; i < total_cores/2; i++) {
+		msr_fd[i] = open_msr(i);
+	}
+	int core_energy_units = read_msr(msr_fd[0], AMD_MSR_PWR_UNIT);
+	
+	int energy_unit = (core_energy_units & AMD_ENERGY_UNIT_MASK) >> 8;
+	energy_unit_d = pow(0.5,(double)(energy_unit));
+	printf("Core energy units: %f\n",energy_unit_d);
+
+}
+
+double read_core_energy(int core){
+	int core_energy_raw = read_msr(msr_fd[core], AMD_MSR_CORE_ENERGY);
+	return core_energy_raw*energy_unit_d;
+}
+
+double read_package_energy(){
+	int package_energy_raw = read_msr(msr_fd[0], AMD_MSR_PACKAGE_ENERGY);
+	return package_energy_raw*energy_unit_d;
+}
+
+void close_rapl(){
+	int i;
+	for (i = 0; i < total_cores/2; i++) {
+		close(msr_fd[i]);
+	}
+	free(msr_fd);
 }
 
 static int rapl_msr_amd_core() {
@@ -190,10 +202,6 @@ static int rapl_msr_amd_core() {
 	
 	return 0;
 }
+/*
 
-int main(int argc, char **argv) {
-	detect_packages();
-	rapl_msr_amd_core();
-	
-	return 0;
-}
+*/
